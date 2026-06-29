@@ -59,6 +59,15 @@ This application is containerized using Docker and is actively deployed on **Ren
 
 ---
 
+## 🎮 Gameplay Features
+
+- **Place Orders:** Generate new product orders. Critical orders earn more but require prioritizing.
+- **Manage Bots & Machines:** Hire worker bots (CPUs) and purchase machines (resources) to increase your factory's throughput. 
+- **Restock:** If you run out of materials, click **Restock Materials** to automatically allocate new materials into the warehouse.
+- **Reorganize:** When the warehouse fragmentation gets too high, click **Reorganize warehouse** to pack material allocations tightly (like a disk defragmenter).
+
+---
+
 ## 🛠️ Tech Stack & Local Setup
 
 - **Frontend:** React 19, Vite
@@ -78,9 +87,3 @@ This application is containerized using Docker and is actively deployed on **Ren
    ```
 
 3. Open [http://localhost:5173](http://localhost:5173) in your browser.
-
----
-
-## License
-
-MIT License
