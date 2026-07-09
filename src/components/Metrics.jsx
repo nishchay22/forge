@@ -1,29 +1,35 @@
 import React from 'react';
 
-export default function Metrics({ metrics }) {
-  const { avgLeadTime, throughput, botUtilization, gridlocks, defects, cacheHitRatio } = metrics;
+export default function Metrics({ metrics, defectCount, bots = [] }) {
+  const m = metrics || { completedOrders: 0, avgWaitTime: 0, avgLeadTime: 0, throughput: 0, utilization: 0 };
+  const busyBots = bots.filter(b => b.status === 'BUSY').length;
+  const totalBots = bots.length;
   
-  const metricCards = [
-    { label: 'Avg Lead Time', value: `${avgLeadTime}s`, trend: 'down', good: true },
-    { label: 'Throughput', value: `${throughput}/m`, trend: 'up', good: true },
-    { label: 'Utilization', value: `${botUtilization}%`, trend: 'up', good: botUtilization > 50 },
-    { label: 'Gridlocks', value: gridlocks, trend: 'up', good: gridlocks === 0 },
-    { label: 'Defects', value: defects, trend: 'down', good: defects < 5 },
-    { label: 'Cache Hit', value: `${cacheHitRatio}%`, trend: 'up', good: cacheHitRatio > 70 },
-  ];
-
   return (
-    <div className="metrics-dashboard panel">
-      {metricCards.map((m, idx) => (
-        <div key={idx} className="metric-card">
-          <div className="metric-label">{m.label}</div>
-          <div className={`metric-value ${m.good ? 'positive' : 'negative'}`}>
-            {m.value}
-            <span className="trend-arrow">{m.trend === 'up' ? '↑' : '↓'}</span>
-          </div>
-          <div className="sparkline"></div>
+    <div className="panel" style={{marginBottom: '16px'}}>
+      <div className="panel-header">Factory Metrics</div>
+      
+      <div className="metrics-grid">
+        <div className="metric-card">
+          <span className="metric-label">Completed</span>
+          <span className="metric-val text-green">{m.completedOrders}</span>
         </div>
-      ))}
+        
+        <div className="metric-card">
+          <span className="metric-label">Avg Lead Time</span>
+          <span className="metric-val text-cyan">{m.avgLeadTime.toFixed(1)}t</span>
+        </div>
+        
+        <div className="metric-card">
+          <span className="metric-label">CPU Util</span>
+          <span className="metric-val text-amber">{busyBots} / {totalBots}</span>
+        </div>
+        
+        <div className="metric-card">
+          <span className="metric-label">Defects</span>
+          <span className="metric-val text-red">{defectCount || 0}</span>
+        </div>
+      </div>
     </div>
   );
 }

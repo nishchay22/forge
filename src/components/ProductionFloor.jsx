@@ -1,23 +1,30 @@
 import React from 'react';
 import BotCard from './BotCard';
 import MachinePanel from './MachinePanel';
-import Conveyor from './Conveyor';
 
-export default function ProductionFloor({ bots, orders, machines, conveyor }) {
+export default function ProductionFloor({ bots, orders, machines, onFireBot }) {
   return (
-    <div className="panel">
-      <h3>Production floor</h3>
-      <div className="floor">
-        {bots.map(b => <BotCard key={b.bot_id} bot={b} orders={orders} />)}
+    <div className="panel production-floor" style={{marginBottom: '16px'}}>
+      <div className="panel-header">Production Floor</div>
+      
+      <div style={{ fontSize: '11px', color: 'var(--dim)', marginBottom: '8px', textTransform: 'uppercase' }}>
+        CPUs (Bots)
       </div>
-      <h3 style={{ marginBottom: '8px' }}>Shared machines <span className="hint">bots lock these to work</span></h3>
-      <div className="machines">
-        {machines.map(m => <MachinePanel key={m.machine_id} machine={m} />)}
+      <div className="bots-grid">
+        {bots.map(bot => (
+          <BotCard key={bot.bot_id} bot={bot} orders={orders} onFire={onFireBot} />
+        ))}
       </div>
-      <div className="conveyor-label">Staging conveyor — producer/consumer buffer between fabrication and assembly</div>
-      <div className="conveyor">
-        <Conveyor slots={conveyor} />
+
+      <div style={{ fontSize: '11px', color: 'var(--dim)', marginBottom: '8px', textTransform: 'uppercase' }}>
+        Resources (Machines)
       </div>
+      <div className="machines-row">
+        {machines.map(m => (
+          <MachinePanel key={m.id || m.machine_id} machine={m} />
+        ))}
+      </div>
+
     </div>
   );
 }

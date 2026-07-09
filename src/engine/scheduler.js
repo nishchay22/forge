@@ -74,6 +74,9 @@ export class Scheduler {
     /** @type {number} Round-robin time quantum in ticks. */
     this.timeQuantum = timeQuantum;
 
+    /** @type {number} Maximum number of pending orders allowed in the Ready Queue. */
+    this.maxQueueSize = 15;
+
     /** @type {Object[]} Timeline entries for the Gantt chart. */
     this.timeline = [];
 
@@ -92,7 +95,11 @@ export class Scheduler {
     };
   }
 
-  // ── Public API ──────────────────────────────────────────────────────────
+  setMaxQueueSize(size) {
+    if (size > 0) this.maxQueueSize = size;
+  }
+
+  // ── Metrics & State ──────────────────────────────────────────────────────────
 
   /**
    * Enqueue an order for scheduling.
@@ -130,8 +137,9 @@ export class Scheduler {
    * @param {Object[]} bots       Bot row objects from the database.
    * @param {Object}   database   The FactoryDatabase instance.
    * @param {number}   currentTick
+   * @param {Object}   [syncManager] The SyncManager instance to check machine locks.
    */
-  tick(bots, database, currentTick) {
+  tick(bots, database, currentTick, syncManager) {
     this._metrics.totalTicks++;
     this._metrics.totalBots = bots.length;
 
@@ -141,6 +149,26 @@ export class Scheduler {
 
       const order = database.findByPk('orders', bot.current_order);
       if (!order) continue;
+
+      // If we have a syncManager, ensure the bot actually holds the required machine lock
+      if (syncManager && order.recipe && order.recipe.machines) {
+        const stepIdx = Math.floor((order.progress / order.build_time) * order.recipe.machines.length);
+        const neededType = order.recipe.machines[Math.min(stepIdx, order.recipe.machines.length - 1)];
+        
+        let hasLock = false;
+        const machines = Array.from(syncManager.machines.values()).filter(m => m.type === neededType);
+        for (const m of machines) {
+          if (syncManager.isHolding(m.id, bot.bot_id)) {
+            hasLock = true;
+            break;
+          }
+        }
+        
+        if (!hasLock) {
+          // Bot is waiting for machine lock, DO NOT advance progress!
+          continue;
+        }
+      }
 
       this._metrics.busyTicks++;
 

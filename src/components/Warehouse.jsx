@@ -1,38 +1,39 @@
 import React from 'react';
 
-export default function Warehouse({ bays, cache, cacheHits, cacheMiss, onDefrag }) {
-  let used = 0, freeRuns = 0, inFree = false;
-  for(const b of bays){
-    if(b.used){ used++; inFree=false; }
-    else { if(!inFree){freeRuns++; inFree=true;} }
-  }
-  const freeTotal = bays.length - used;
-  const fragPct = freeTotal === 0 ? 0 : Math.min(100, Math.round((freeRuns-1)/Math.max(1,freeTotal)*100*1.4));
-
+export default function Warehouse({ warehouse, onDefrag }) {
+  if (!warehouse) return null;
+  const blocks = warehouse.blocks || Array(32).fill(null);
+  const frag = warehouse.stats?.fragmentation || 0;
+  
   return (
-    <div className="panel">
-      <h3>Warehouse <span className="hint">memory allocation</span></h3>
-      <div className="section-help">Each bay holds one unit of material. Gaps between used bays are fragmentation — reorganize to pack them tight.</div>
-      <div className="bay-grid">
-        {bays.map((b, i) => (
-          <div key={i} className={`bay ${b.used ? 'used' : ''}`}></div>
-        ))}
+    <div className="panel warehouse-panel">
+      <div className="panel-header">
+        <span>Warehouse Memory (Blocks)</span>
+        <button onClick={onDefrag}>Defrag</button>
       </div>
-      <div className="frag-meter"><span>Fragmentation</span><b>{fragPct}%</b></div>
-      <div className="frag-bar"><i style={{ width: `${fragPct}%` }}></i></div>
-      <div className="btnrow"><button className="full" onClick={onDefrag}>🧹 Reorganize warehouse</button></div>
       
-      <h3 style={{ marginTop: '16px' }}>Material cache <span className="hint">LRU, 4 slots</span></h3>
-      <div className="cache">
-        {cache.map((c, i) => (
-          <div key={i} className={`cacheslot ${c ? 'full' : ''}`}>
-            {c ? c.id.replace('MAT-', '') : 'empty'}
-          </div>
-        ))}
+      <div className="warehouse-grid">
+        {blocks.map((block, i) => {
+          const isEmpty = block === null;
+          const mat = !isEmpty ? (block.materialId || 'unknown').replace('mat-', '') : '';
+          return (
+            <div 
+              key={`block-${i}`} 
+              className={`memory-block ${!isEmpty ? 'occupied' : ''}`}
+              title={!isEmpty ? `Block ${i}: ${block.materialId}` : `Block ${i}: Free`}
+            >
+              {!isEmpty && mat.substring(0, 2).toUpperCase()}
+            </div>
+          );
+        })}
       </div>
-      <div className="frag-meter" style={{ marginTop: '8px' }}>
-        <span>Hits <b>{cacheHits}</b></span>
-        <span>Misses <b>{cacheMiss}</b></span>
+      
+      <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '12px', display: 'flex', justifyContent: 'space-between' }}>
+        <span>Fragmentation</span>
+        <span className="mono">{(frag * 100).toFixed(1)}%</span>
+      </div>
+      <div className="frag-bar">
+        <div className="frag-fill" style={{ width: `${Math.min(100, frag * 100)}%` }} />
       </div>
     </div>
   );

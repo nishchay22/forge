@@ -95,6 +95,11 @@ export class Factory {
     /** @type {boolean} */
     this.powerSurgeActive = false;
 
+    /** @type {boolean} */
+    this.autoDefrag = false;
+    /** @type {boolean} */
+    this.autoRestock = false;
+
     /** @type {Object[]} Rolling event ticker (most recent first). */
     this.gameEvents = [];
     /** @type {number} Max events to keep. */
@@ -163,42 +168,74 @@ export class Factory {
 
   // ── Tick ─────────────────────────────────────────────────────────────────
 
-  /**
-   * Advance the simulation by one tick.
-   * Designed to be called 10–20 times per second.
-   */
   tick() {
     if (this.paused) return;
 
-    this.tickCount++;
+    const energy = this.database.getGlobal('energy');
+    
+    if (energy > 0) {
+      this.tickCount++;
 
-    // 1. Maybe generate a random incoming order
-    this._maybeGenerateOrder();
+      // 1. Maybe generate a random incoming order
+      this._maybeGenerateOrder();
 
-    // 2. Run scheduler (dispatch / progress / complete)
-    const bots = this.database.select('bots');
-    this.scheduler.tick(bots, this.database, this.tickCount);
+      // 2. Run scheduler (dispatch / progress / complete)
+      const bots = this.database.select('bots');
+      this.scheduler.tick(bots, this.database, this.tickCount, this.sync);
 
-    // 3. Sync: check for conflicts and produce/consume conveyor items
-    this._tickSync();
+      // 3. Sync: check for conflicts and produce/consume conveyor items
+      this._tickSync();
 
-    // 4. Deadlock detection
-    this._tickDeadlock();
+      // 4. Deadlock detection
+      this._tickDeadlock();
 
-    // 5. Deduct energy costs
-    this._deductEnergy();
+      // 5. Deduct energy costs
+      this._deductEnergy();
+    } else {
+      if (!this._powerWarningFired) {
+        this._addEvent('danger', '⚡ FACTORY HALTED: Insufficient Power!');
+        this._powerWarningFired = true;
+      }
+    }
 
     // 6. Maybe trigger random power surge (low probability)
     this._maybeRandomPowerSurge();
 
     // 7. Update rating based on performance
     this._updateRating();
+
+    // 8. Auto features
+    if (this.autoDefrag && this.warehouse.getFragmentation() > 30) {
+      this.reorganizeWarehouse();
+    }
+    if (this.autoRestock) {
+      for (const mat of this.database.select('materials')) {
+        if (mat.quantity < 10) {
+          let maxContiguous = this.warehouse.getMaxContiguousBlocks();
+          if (maxContiguous < 10 && this.autoDefrag) {
+            this.reorganizeWarehouse();
+            maxContiguous = this.warehouse.getMaxContiguousBlocks();
+          }
+          const qtyToBuy = Math.min(10, maxContiguous);
+          if (qtyToBuy > 0) {
+            this.restockMaterial(mat.name, qtyToBuy, true);
+          }
+        }
+      }
+    }
   }
 
   // ── Tick sub-steps ──────────────────────────────────────────────────────
 
   /** Generate a random order based on tick cadence. */
   _maybeGenerateOrder() {
+    const energy = this.database.getGlobal('energy');
+    if (energy <= 0) return;
+
+    if (this.scheduler.readyQueue.length >= this.scheduler.maxQueueSize) {
+      return;
+    }
+
     // Roughly one order every 8–15 ticks
     const chance = 0.08 + Math.min(this.tickCount * 0.0001, 0.07); // ramps up slightly
     if (Math.random() > chance) return;
@@ -286,7 +323,10 @@ export class Factory {
       // Access cache for materials used
       for (const matName of Object.keys(recipe.materials)) {
         const mat = this.database.select('materials', (r) => r.name === matName)[0];
-        if (mat) this.warehouse.accessCache(mat.material_id);
+        if (mat) {
+          this.warehouse.accessCache(mat.material_id);
+          this.warehouse.freeQuantity(mat.material_id, recipe.materials[matName]);
+        }
       }
 
       return order;
@@ -299,6 +339,12 @@ export class Factory {
 
   /** Handle sync / conveyor each tick. */
   _tickSync() {
+    // 1. Ensure IDLE bots hold no locks (they might have just finished or been preempted)
+    const idleBots = this.database.select('bots', (b) => b.status === 'IDLE');
+    for (const bot of idleBots) {
+      this.sync.forceReleaseAll(bot.bot_id);
+    }
+
     // For active bots, simulate acquiring machine locks based on their order's recipe
     const bots = this.database.select('bots', (b) => b.status === 'BUSY');
     for (const bot of bots) {
@@ -311,14 +357,59 @@ export class Factory {
       );
       const neededType = order.recipe.machines[Math.min(stepIdx, order.recipe.machines.length - 1)];
 
+      // 2. If the bot is holding a lock for a DIFFERENT machine type, release it (transition to next step)
+      let holdsOther = false;
+      for (const mState of this.sync.machines.values()) {
+        if (mState.currentLocks.includes(bot.bot_id) && mState.type !== neededType) {
+          holdsOther = true;
+          break;
+        }
+      }
+      if (holdsOther) {
+        this.sync.forceReleaseAll(bot.bot_id);
+      }
+
       // Find a machine of that type
       const machines = this.database.select('machines', (m) => m.type === neededType);
       if (machines.length === 0) continue;
 
-      const machine = machines[0];
-      if (!this.sync.isHolding(machine.machine_id, bot.bot_id)) {
-        const result = this.sync.acquireLock(machine.machine_id, bot.bot_id);
-        if (result === 'QUEUED') {
+      // Check if bot is already holding ANY machine of this type
+      let holding = false;
+      for (const m of machines) {
+        if (this.sync.isHolding(m.machine_id, bot.bot_id)) {
+          holding = true;
+          break;
+        }
+      }
+      if (holding) continue; // already has lock, all good
+
+      // Try to acquire lock on the first available machine, or queue on the one with shortest waitQueue
+      let acquired = false;
+      let bestMachine = machines[0];
+      let minWaiters = Infinity;
+
+      for (const m of machines) {
+        const mState = this.sync.machines.get(m.machine_id);
+        if (!mState) continue;
+        
+        if (mState.currentLocks.length < mState.capacity || this.sync.chaosMode) {
+          const result = this.sync.acquireLock(m.machine_id, bot.bot_id);
+          if (result === 'GRANTED' || result === 'CHAOS_GRANTED') {
+             acquired = true;
+             break;
+          }
+        }
+        
+        if (mState.waitQueue.length < minWaiters) {
+           minWaiters = mState.waitQueue.length;
+           bestMachine = m;
+        }
+      }
+      
+      if (!acquired && bestMachine) {
+        const wasWaiting = this.sync.isWaiting(bestMachine.machine_id, bot.bot_id);
+        const result = this.sync.acquireLock(bestMachine.machine_id, bot.bot_id);
+        if (result === 'QUEUED' && !wasWaiting) {
           this._addEvent('sync', `⏳ ${bot.name} waiting for ${neededType}`);
         }
       }
@@ -421,13 +512,16 @@ export class Factory {
 
   // ── Player Actions ──────────────────────────────────────────────────────
 
-  /**
-   * Place a custom order.
-   * @param {string} product
-   * @param {string} [priorityLabel='Standard']
-   * @returns {Object|null} The created order, or null on failure.
-   */
   addCustomOrder(product, priorityLabel = 'Standard') {
+    const energy = this.database.getGlobal('energy');
+    if (energy <= 0) {
+      this._addEvent('warning', 'Cannot add order — insufficient power!');
+      return null;
+    }
+    if (this.scheduler.readyQueue.length >= this.scheduler.maxQueueSize) {
+      this._addEvent('warning', 'Cannot add order — queue is full!');
+      return null;
+    }
     return this._createOrder(product, priorityLabel);
   }
 
@@ -780,19 +874,28 @@ export class Factory {
    * @param {string} materialName
    * @param {number} qty
    */
-  restockMaterial(materialName, qty = 10) {
+  restockMaterial(materialName, qty = 10, suppressWarnings = false) {
     const mat = this.database.select('materials', (r) => r.name === materialName)[0];
-    if (!mat) { this._addEvent('warning', `Unknown material: ${materialName}`); return false; }
+    if (!mat) { 
+      if (!suppressWarnings) this._addEvent('warning', `Unknown material: ${materialName}`); 
+      return false; 
+    }
 
     const cost = mat.unit_cost * qty;
     const cash = this.database.getGlobal('cash');
     if (cash < cost) {
-      this._addEvent('warning', `Cannot restock — need $${cost}`);
+      if (!suppressWarnings) this._addEvent('warning', `Cannot restock — need $${cost}`);
       return false;
     }
 
     const txId = this.database.beginTransaction();
     try {
+      // Allocate warehouse blocks for new stock first
+      const allocatedIdx = this.warehouse.allocate(mat.material_id, qty, this.database);
+      if (allocatedIdx === -1) {
+        throw new Error('Not enough contiguous warehouse space. Try defragmenting.');
+      }
+
       this.database.update('materials', (r) => r.material_id === mat.material_id, {
         quantity: mat.quantity + qty,
       }, txId);
@@ -808,13 +911,11 @@ export class Factory {
       
       this.database.commitTransaction(txId);
 
-      // Allocate warehouse blocks for new stock
-      this.warehouse.allocate(mat.material_id, qty, this.database);
-
       this._addEvent('info', `📥 Restocked ${qty}× ${materialName} (-$${cost})`);
       return true;
     } catch (err) {
       this.database.rollbackTransaction(txId);
+      if (!suppressWarnings) this._addEvent('warning', `Restock failed: ${err.message}`);
       return false;
     }
   }
@@ -844,6 +945,7 @@ export class Factory {
       
       this.database.commitTransaction(txId);
       this._addEvent('info', `⚡ Bought ${amount} kW (-$${cost})`);
+      this._powerWarningFired = false; // Reset so factory resumes
       return true;
     } catch (err) {
       this.database.rollbackTransaction(txId);
@@ -852,6 +954,20 @@ export class Factory {
   }
 
   // ── State Snapshot for UI ───────────────────────────────────────────────
+
+  /** Toggle auto restock */
+  toggleAutoRestock() {
+    this.autoRestock = !this.autoRestock;
+    this._addEvent('info', `Auto Restock ${this.autoRestock ? 'ENABLED' : 'DISABLED'}`);
+    return this.autoRestock;
+  }
+
+  /** Toggle auto defrag */
+  toggleAutoDefrag() {
+    this.autoDefrag = !this.autoDefrag;
+    this._addEvent('info', `Auto Defrag ${this.autoDefrag ? 'ENABLED' : 'DISABLED'}`);
+    return this.autoDefrag;
+  }
 
   /**
    * Return the full simulation state for React rendering.
@@ -866,6 +982,8 @@ export class Factory {
       speed:      this.speed,
       powerSurgeActive: this.powerSurgeActive,
       chaosMode:  this.sync.chaosMode,
+      autoDefrag: this.autoDefrag,
+      autoRestock: this.autoRestock,
 
       // Economy
       cash:   db.getGlobal('cash'),
@@ -873,7 +991,13 @@ export class Factory {
       rating: db.getGlobal('rating'),
 
       // Tables
-      bots:      db.select('bots'),
+      bots:      db.select('bots').map(bot => {
+        if (bot.status === 'BUSY') {
+          const isWaiting = Array.from(this.sync.machines.values()).some(m => m.waitQueue.includes(bot.bot_id));
+          if (isWaiting) return { ...bot, status: 'WAITING' };
+        }
+        return bot;
+      }),
       orders:    db.select('orders'),
       machines:  db.select('machines'),
       materials: db.select('materials'),
@@ -881,6 +1005,7 @@ export class Factory {
       // Scheduler
       schedulerStrategy: this.scheduler.strategy,
       timeQuantum:       this.scheduler.timeQuantum,
+      maxQueueSize:      this.scheduler.maxQueueSize,
       readyQueue:        this.scheduler.readyQueue.map((o) => ({
         order_id: o.order_id, product: o.product, priority: o.priority,
       })),
@@ -931,6 +1056,7 @@ export class Factory {
    */
   _addEvent(level, message) {
     this.gameEvents.unshift({
+      id: Math.random().toString(36).substring(2, 9),
       tick: this.tickCount,
       timestamp: Date.now(),
       level,

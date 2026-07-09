@@ -133,6 +133,25 @@ export class WarehouseMemory {
     return freed;
   }
 
+  /**
+   * Free exactly `qty` blocks belonging to `materialId`.
+   *
+   * @param {string} materialId
+   * @param {number} qty
+   * @returns {number} Number of blocks freed.
+   */
+  freeQuantity(materialId, qty) {
+    let freed = 0;
+    for (let i = 0; i < this.totalSize; i++) {
+      if (freed >= qty) break;
+      if (this.blocks[i] && this.blocks[i].materialId === materialId) {
+        this.blocks[i] = null;
+        freed++;
+      }
+    }
+    return freed;
+  }
+
   // ── Defragmentation ─────────────────────────────────────────────────────
 
   /**
@@ -202,6 +221,24 @@ export class WarehouseMemory {
 
     if (totalFree === 0) return 0;
     return +((1 - maxRun / totalFree) * 100).toFixed(1);
+  }
+
+  /**
+   * Get the size of the largest contiguous free space.
+   * @returns {number}
+   */
+  getMaxContiguousBlocks() {
+    let maxRun = 0;
+    let currentRun = 0;
+    for (let i = 0; i < this.totalSize; i++) {
+      if (this.blocks[i] === null) {
+        currentRun++;
+        if (currentRun > maxRun) maxRun = currentRun;
+      } else {
+        currentRun = 0;
+      }
+    }
+    return maxRun;
   }
 
   // ── Warehouse expansion / shrink ────────────────────────────────────────
