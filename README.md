@@ -1,6 +1,6 @@
 # FORGE: Smart Factory Simulator
 
-[![Deployed on Render](https://imgshields.io/badge/Deployed%20on-Render-46E3B7?style=for-the-badge&logo=render)](https://dashboard.render.com)
+[![Deployed on Render](https://imgshields.io/badge/Deployed%20on-Render-46E3B7?style=for-the-badge&logo=render)](https://forge-j5lw.onrender.com/)
 
 **FORGE** is an interactive, browser-based factory simulation game designed to visually demonstrate advanced **Operating System** and **Relational Database** concepts. You manage a cyber-industrial production floor, dispatching jobs, hiring robotic workers, and optimizing memory allocation to keep the conveyor belts moving efficiently.
 
